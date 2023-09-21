@@ -1,19 +1,19 @@
-repository
-https://github.com/neovim/neovim
-https://github.com/facebook/react
-https://github.com/grpc/grpc
-https://github.com/quarkusio/quarkus
-https://github.com/89luca89/distrobox
-https://github.com/jesseduffield/lazygit/
-https://github.com/tldr-pages/tldr
-https://github.com/yt-dlp/yt-dlp
-https://github.com/backstage/backstage
-https://github.com/sharkdp/fd/
-https://github.com/keycloak/keycloak
-https://github.com/apache/camel 
-https://github.com/ajeetdsouza/zoxide
-https://github.com/denoland/deno
-https://github.com/firecracker-microvm/firecracker
-https://github.com/electron/electron
-https://github.com/argoproj/argo-cd
-https://github.com/spring-projects/spring-framework
+owner               ,repository
+neovim              ,neovim
+facebook            ,react
+grpc                ,grpc
+quarkusio           ,quarkus
+89luca89            ,distrobox
+jesseduffield       ,lazygit
+tldr-pages          ,tldr
+yt-dlp              ,yt-dlp
+backstage           ,backstage
+sharkdp             ,fd
+keycloak            ,keycloak
+apache              ,camel
+ajeetdsouza         ,zoxide
+denoland            ,deno
+firecracker-microvm ,firecracker
+electron            ,electron
+argoproj            ,argo-cd
+spring-projects     ,spring-framework
