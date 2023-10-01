@@ -14,15 +14,10 @@ import (
 	"github.com/go-resty/resty/v2"
 )
 
-func sendRequest(client *resty.Client, page int, url string) *resty.Response {
+func sendRequest(client *resty.Client, queryParams map[string]string, url string) *resty.Response {
 	resp, err := client.R().
 		EnableTrace().
-		SetQueryParams(map[string]string{
-			"state": "all",
-			"sort": "created",
-			"per_page": "100",
-			"page": fmt.Sprintf("%d", page),
-		}).
+		SetQueryParams(queryParams).
 		SetHeader("Accept", "application/vnd.github+json").
 		SetHeader("X-GitHub-Api-Version", "2022-11-28").
 		SetAuthToken(os.Getenv("GITHUB_TOKEN")).
@@ -72,9 +67,20 @@ func scrapeComments(owner string, repo string, wg *sync.WaitGroup) {
 	go processResponses(respCh, commCh)
 	go writeComments(owner, repo, commCh)
 
+	var queryParams map[string]string
+	var url string
 	var resp *resty.Response
 	for {
-		resp = sendRequest(client, 1, fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/comments", owner, repo))
+		queryParams = map[string]string{
+			"state": "all",
+			"sort": "created",
+			"per_page": "100",
+			"page": fmt.Sprintf("%d", 1),
+		}
+
+		url = fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/comments", owner, repo)
+
+		resp = sendRequest(client, queryParams, url)
 
 		if resp.IsSuccess() {
 			respCh <- resp
@@ -106,6 +112,9 @@ func main() {
 			log.Fatalln(err)
 		}
 	}
+
+	os.RemoveAll("./data")
+	os.Mkdir("./data", os.ModePerm)
 
 	var wg sync.WaitGroup
 
