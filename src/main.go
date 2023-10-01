@@ -7,25 +7,26 @@ import (
 	"fmt"
 	"sync"
 	"regexp"
+	"strings"
 	"encoding/csv"
 
 	"github.com/joho/godotenv"
 	"github.com/go-resty/resty/v2"
 )
 
-func send_request(client *resty.Client, page int, owner string, repo string) *resty.Response {
+func sendRequest(client *resty.Client, page int, url string) *resty.Response {
 	resp, err := client.R().
 		EnableTrace().
 		SetQueryParams(map[string]string{
 			"state": "all",
 			"sort": "created",
-			"per_page": "10",
+			"per_page": "100",
 			"page": fmt.Sprintf("%d", page),
 		}).
 		SetHeader("Accept", "application/vnd.github+json").
 		SetHeader("X-GitHub-Api-Version", "2022-11-28").
 		SetAuthToken(os.Getenv("GITHUB_TOKEN")).
-		Get(fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/comments", owner, repo))
+		Get(url)
 	
 	if err != nil {
 		log.Fatal(err)
@@ -34,21 +35,30 @@ func send_request(client *resty.Client, page int, owner string, repo string) *re
 	return resp
 }
 
-func scrape_comments(owner string, repo string, wg *sync.WaitGroup) {
+func scrapeComments(owner string, repo string, wg *sync.WaitGroup) {
 	client := resty.New()
+
+	var resp *resty.Response
+	for {
+		resp = sendRequest(client, 1, fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/comments", owner, repo))
+
+		if resp.IsSuccess() {
+			break
+		}
+	}
 	
-	resp := send_request(client, 1, owner, repo)
 	body := string(resp.Body())
-	r, _ := regexp.Compile(`\"body\":\"([^\"])*\"`)
-	
-	f, err := os.OpenFile(fmt.Sprintf("data/%s.txt", repo), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+
+	content_regex := regexp.MustCompile(`"body":"(?:[^"\\]|\\.)*"`)
+
+	f, err := os.OpenFile(fmt.Sprintf("data/%s.csv", repo), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer f.Close()
 	
-	for _, v := range r.FindAllString(body, -1) {
-		_, err := f.WriteString(fmt.Sprintf("%s\n", v))
+	for _, v := range content_regex.FindAllString(body, -1) {
+		_, err := f.WriteString(strings.TrimPrefix(fmt.Sprintf("%s\n", v), "\"body\":"))
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -88,7 +98,7 @@ func main() {
 		}
 		
 		wg.Add(1)
-		go scrape_comments(line[0], line[1], &wg)
+		go scrapeComments(line[0], line[1], &wg)
 	}
 
 	wg.Wait()
