@@ -30,6 +30,40 @@ func sendRequest(client *resty.Client, queryParams map[string]string, url string
 	return resp
 }
 
+func sendRequests(owner string, repo string, respCh chan *resty.Response) {
+	client := resty.New()
+
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/comments", owner, repo)
+
+	var resp *resty.Response
+	page := 1
+	for {
+		queryParams := map[string]string{
+			"state": "all",
+			"sort": "created",
+			"per_page": "100",
+			"page": fmt.Sprintf("%d", page),
+		}
+		
+		for {
+			resp = sendRequest(client, queryParams, url)
+
+			if resp.IsSuccess() {
+				break
+			}
+		}
+		
+		if resp.Size() <= 2 {
+			break
+		}
+
+		respCh <- resp
+		page = page+1
+	}
+
+	close(respCh)
+}
+
 func processResponses(respCh chan *resty.Response, commCh chan string) {
 	content_regex := regexp.MustCompile(`"body":"(?:[^"\\]|\\.)*"`)
 	
@@ -60,37 +94,13 @@ func writeComments(owner string, repo string, commCh chan string) {
 }
 
 func scrapeComments(owner string, repo string, wg *sync.WaitGroup) {
-	client := resty.New()
-
 	respCh := make(chan *resty.Response)
 	commCh := make(chan string)
+	go sendRequests(owner, repo, respCh)
 	go processResponses(respCh, commCh)
 	go writeComments(owner, repo, commCh)
 
-	var queryParams map[string]string
-	var url string
-	var resp *resty.Response
-	for {
-		queryParams = map[string]string{
-			"state": "all",
-			"sort": "created",
-			"per_page": "100",
-			"page": fmt.Sprintf("%d", 1),
-		}
-
-		url = fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/comments", owner, repo)
-
-		resp = sendRequest(client, queryParams, url)
-
-		if resp.IsSuccess() {
-			respCh <- resp
-			break
-		}
-	}
-	// temp
-	close(respCh)
-
-	_ = <- commCh
+	<-commCh
 
 	wg.Done()
 }
