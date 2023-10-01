@@ -35,34 +35,56 @@ func sendRequest(client *resty.Client, page int, url string) *resty.Response {
 	return resp
 }
 
+func processResponses(respCh chan *resty.Response, commCh chan string) {
+	content_regex := regexp.MustCompile(`"body":"(?:[^"\\]|\\.)*"`)
+	
+	for response := range respCh {
+		body := string(response.Body())
+
+		for _, comment := range content_regex.FindAllString(body, -1) {
+			commCh <- strings.TrimPrefix(fmt.Sprintf("%s\n", comment), "\"body\":")
+		}
+	}
+
+	close(commCh)
+}
+
+func writeComments(owner string, repo string, commCh chan string) {
+	f, err := os.OpenFile(fmt.Sprintf("data/%s-%s.csv", owner, repo), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer f.Close()
+	
+	for comment := range commCh {
+		_, err := f.WriteString(comment)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+}
+
 func scrapeComments(owner string, repo string, wg *sync.WaitGroup) {
 	client := resty.New()
+
+	respCh := make(chan *resty.Response)
+	commCh := make(chan string)
+	go processResponses(respCh, commCh)
+	go writeComments(owner, repo, commCh)
 
 	var resp *resty.Response
 	for {
 		resp = sendRequest(client, 1, fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/comments", owner, repo))
 
 		if resp.IsSuccess() {
+			respCh <- resp
 			break
 		}
 	}
-	
-	body := string(resp.Body())
+	// temp
+	close(respCh)
 
-	content_regex := regexp.MustCompile(`"body":"(?:[^"\\]|\\.)*"`)
-
-	f, err := os.OpenFile(fmt.Sprintf("data/%s.csv", repo), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer f.Close()
-	
-	for _, v := range content_regex.FindAllString(body, -1) {
-		_, err := f.WriteString(strings.TrimPrefix(fmt.Sprintf("%s\n", v), "\"body\":"))
-		if err != nil {
-			log.Fatal(err)
-		}
-	}
+	_ = <- commCh
 
 	wg.Done()
 }
