@@ -49,11 +49,15 @@ func sendRequests(owner string, repo string, respCh chan *resty.Response) {
 			resp = sendRequest(client, queryParams, url)
 
 			if resp.IsSuccess() {
+				log.Println(fmt.Sprintf("Request, %s, %d, success", url, page))
 				break
+			} else {
+				log.Println(fmt.Sprintf("Request, %s, %d, failed, %s", url, page, resp.Body()))
 			}
 		}
 		
 		if resp.Size() <= 2 {
+			log.Println(fmt.Sprintf("Response, %s, %d, %s", url, page, resp.Body()))
 			break
 		}
 
@@ -78,7 +82,7 @@ func processResponses(respCh chan *resty.Response, commCh chan string) {
 	close(commCh)
 }
 
-func writeComments(owner string, repo string, commCh chan string) {
+func writeComments(owner string, repo string, commCh chan string, done chan bool) {
 	f, err := os.OpenFile(fmt.Sprintf("data/%s-%s.csv", owner, repo), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		log.Fatal(err)
@@ -91,16 +95,19 @@ func writeComments(owner string, repo string, commCh chan string) {
 			log.Fatal(err)
 		}
 	}
+
+	done <- true
 }
 
-func scrapeComments(owner string, repo string, wg *sync.WaitGroup) {
+func scrapeComments(owner string, repo string, wg *sync.WaitGroup) {	
 	respCh := make(chan *resty.Response)
 	commCh := make(chan string)
+	done := make(chan bool)
 	go sendRequests(owner, repo, respCh)
 	go processResponses(respCh, commCh)
-	go writeComments(owner, repo, commCh)
+	go writeComments(owner, repo, commCh, done)
 
-	<-commCh
+	<-done
 
 	wg.Done()
 }
