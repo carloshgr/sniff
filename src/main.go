@@ -5,10 +5,11 @@ import (
 	"os"
 	"log"
 	"fmt"
-	"sync"
+	"math"
 	"regexp"
 	"strings"
 	"encoding/csv"
+	"encoding/json"
 
 	"github.com/joho/godotenv"
 	"github.com/go-resty/resty/v2"
@@ -30,9 +31,28 @@ func sendRequest(client *resty.Client, queryParams map[string]string, url string
 	return resp
 }
 
-func sendRequests(owner string, repo string, respCh chan *resty.Response) {
+func getRemainingLimit(limitCh chan int) {
 	client := resty.New()
+	
+	var body map[string]interface{}
+	for {
+		url := "https://api.github.com/rate_limit"
+	
+		resp := sendRequest(client, make(map[string]string), url)
+	
+		json.Unmarshal(resp.Body(), &body)
+	
+		remaining := int(math.Round(body["resources"].(map[string]interface{})["core"].(map[string]interface{})["remaining"].(float64)))
 
+		for i := 0; i < remaining; i++ {
+			limitCh <- 1
+		}
+	}
+}
+
+func sendRequests(owner string, repo string, respCh chan *resty.Response, limitCh chan int) {
+	client := resty.New()
+	
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/comments", owner, repo)
 
 	var resp *resty.Response
@@ -46,6 +66,7 @@ func sendRequests(owner string, repo string, respCh chan *resty.Response) {
 		}
 		
 		for {
+			<- limitCh
 			resp = sendRequest(client, queryParams, url)
 
 			if resp.IsSuccess() {
@@ -99,17 +120,15 @@ func writeComments(owner string, repo string, commCh chan string, done chan bool
 	done <- true
 }
 
-func scrapeComments(owner string, repo string, wg *sync.WaitGroup) {	
+func scrapeComments(owner string, repo string, limitCh chan int) {	
 	respCh := make(chan *resty.Response)
 	commCh := make(chan string)
 	done := make(chan bool)
-	go sendRequests(owner, repo, respCh)
+	go sendRequests(owner, repo, respCh, limitCh)
 	go processResponses(respCh, commCh)
 	go writeComments(owner, repo, commCh, done)
 
 	<-done
-
-	wg.Done()
 }
 
 func main() {
@@ -133,7 +152,8 @@ func main() {
 	os.RemoveAll("./data")
 	os.Mkdir("./data", os.ModePerm)
 
-	var wg sync.WaitGroup
+	limitCh := make(chan int, 5000)
+	go getRemainingLimit(limitCh)
 
 	for {
 		line, err := csvReader.Read()
@@ -145,9 +165,6 @@ func main() {
 			log.Fatal(err)
 		}
 		
-		wg.Add(1)
-		go scrapeComments(line[0], line[1], &wg)
+		scrapeComments(line[0], line[1], limitCh)
 	}
-
-	wg.Wait()
 }
