@@ -5,7 +5,9 @@ import (
 	"os"
 	"log"
 	"fmt"
+	"time"
 	"math"
+	"sync"
 	"regexp"
 	"strings"
 	"encoding/csv"
@@ -31,6 +33,15 @@ func sendRequest(client *resty.Client, queryParams map[string]string, url string
 	return resp
 }
 
+func getRate(rateCh chan int) {
+	sleepTime := time.Second
+
+	for {
+		rateCh <- 1
+		time.Sleep(sleepTime)
+	}
+}
+
 func getRemainingLimit(limitCh chan int) {
 	client := resty.New()
 	
@@ -50,7 +61,7 @@ func getRemainingLimit(limitCh chan int) {
 	}
 }
 
-func sendRequests(owner string, repo string, respCh chan *resty.Response, limitCh chan int) {
+func sendRequests(owner string, repo string, respCh chan *resty.Response, limitCh chan int, rateCh chan int) {
 	client := resty.New()
 	
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/comments", owner, repo)
@@ -67,6 +78,7 @@ func sendRequests(owner string, repo string, respCh chan *resty.Response, limitC
 		
 		for {
 			<- limitCh
+			<- rateCh
 			resp = sendRequest(client, queryParams, url)
 
 			if resp.IsSuccess() {
@@ -120,15 +132,16 @@ func writeComments(owner string, repo string, commCh chan string, done chan bool
 	done <- true
 }
 
-func scrapeComments(owner string, repo string, limitCh chan int) {	
+func scrapeComments(owner string, repo string, limitCh chan int, rateCh chan int, wg *sync.WaitGroup) {	
 	respCh := make(chan *resty.Response)
 	commCh := make(chan string)
 	done := make(chan bool)
-	go sendRequests(owner, repo, respCh, limitCh)
+	go sendRequests(owner, repo, respCh, limitCh, rateCh)
 	go processResponses(respCh, commCh)
 	go writeComments(owner, repo, commCh, done)
 
 	<-done
+	wg.Done()
 }
 
 func main() {
@@ -153,8 +166,11 @@ func main() {
 	os.Mkdir("./data", os.ModePerm)
 
 	limitCh := make(chan int, 5000)
+	rateCh := make(chan int, 5)
 	go getRemainingLimit(limitCh)
+	go getRate(rateCh)
 
+	var wg sync.WaitGroup
 	for {
 		line, err := csvReader.Read()
 		if err == io.EOF {
@@ -165,6 +181,9 @@ func main() {
 			log.Fatal(err)
 		}
 		
-		scrapeComments(line[0], line[1], limitCh)
+		wg.Add(1)
+		go scrapeComments(line[0], line[1], limitCh, rateCh, &wg)
 	}
+
+	wg.Wait()
 }
