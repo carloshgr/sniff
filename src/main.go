@@ -1,20 +1,19 @@
 package main
 
 import (
-	"io"
-	"os"
-	"log"
-	"fmt"
-	"time"
-	"math"
-	"sync"
-	"regexp"
-	"strings"
 	"encoding/csv"
 	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"math"
+	"os"
+	"strings"
+	"sync"
+	"time"
 
-	"github.com/joho/godotenv"
 	"github.com/go-resty/resty/v2"
+	"github.com/joho/godotenv"
 )
 
 func sendRequest(client *resty.Client, queryParams map[string]string, url string) *resty.Response {
@@ -25,7 +24,7 @@ func sendRequest(client *resty.Client, queryParams map[string]string, url string
 		SetHeader("X-GitHub-Api-Version", "2022-11-28").
 		SetAuthToken(os.Getenv("GITHUB_TOKEN")).
 		Get(url)
-	
+
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -44,15 +43,15 @@ func getRate(rateCh chan int) {
 
 func getRemainingLimit(limitCh chan int) {
 	client := resty.New()
-	
+
 	var body map[string]interface{}
 	for {
 		url := "https://api.github.com/rate_limit"
-	
+
 		resp := sendRequest(client, make(map[string]string), url)
-	
+
 		json.Unmarshal(resp.Body(), &body)
-	
+
 		remaining := int(math.Round(body["resources"].(map[string]interface{})["core"].(map[string]interface{})["remaining"].(float64)))
 
 		for i := 0; i < remaining; i++ {
@@ -63,67 +62,76 @@ func getRemainingLimit(limitCh chan int) {
 
 func sendRequests(owner string, repo string, respCh chan *resty.Response, limitCh chan int, rateCh chan int) {
 	client := resty.New()
-	
+
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/comments", owner, repo)
 
 	var resp *resty.Response
 	page := 1
 	for {
 		queryParams := map[string]string{
-			"state": "all",
-			"sort": "created",
+			"state":    "all",
+			"sort":     "created",
 			"per_page": "100",
-			"page": fmt.Sprintf("%d", page),
+			"page":     fmt.Sprintf("%d", page),
 		}
-		
+
 		for {
-			<- limitCh
-			<- rateCh
+			<-limitCh
+			<-rateCh
 			resp = sendRequest(client, queryParams, url)
 
 			if resp.IsSuccess() {
-				log.Println(fmt.Sprintf("Request, %s, %d, success", url, page))
+				log.Printf("Request, %s, %d, success", url, page)
 				break
 			} else {
-				log.Println(fmt.Sprintf("Request, %s, %d, failed, %s", url, page, resp.Body()))
+				log.Printf("Request, %s, %d, failed, %s", url, page, resp.Body())
 			}
 		}
-		
+
 		if resp.Size() <= 2 {
-			log.Println(fmt.Sprintf("Response, %s, %d, %s", url, page, resp.Body()))
+			log.Printf("Response, %s, %d, %s", url, page, resp.Body())
 			break
 		}
 
 		respCh <- resp
-		page = page+1
+		page = page + 1
 	}
 
 	close(respCh)
 }
 
-func processResponses(respCh chan *resty.Response, commCh chan string) {
-	content_regex := regexp.MustCompile(`"body":"(?:[^"\\]|\\.)*"`)
-	
+func processResponses(respCh chan *resty.Response, commCh chan []string) {
+	var comments interface{}
 	for response := range respCh {
-		body := string(response.Body())
+		json.Unmarshal(response.Body(), &comments)
+		comments, _ := comments.([]interface{})
 
-		for _, comment := range content_regex.FindAllString(body, -1) {
-			commCh <- strings.TrimPrefix(fmt.Sprintf("%s\n", comment), "\"body\":")
+		replacer := strings.NewReplacer("\r", "", "\n", "")
+		for _, comment := range comments {
+			comment_map, _ := comment.(map[string]interface{})
+			data := []string{
+				// fmt.Sprintf("%d", int(comment_map["id"].(float64))),
+				comment_map["url"].(string),
+				comment_map["created_at"].(string),
+				replacer.Replace(comment_map["body"].(string))}
+			commCh <- data
 		}
 	}
 
 	close(commCh)
 }
 
-func writeComments(owner string, repo string, commCh chan string, done chan bool) {
+func writeComments(owner string, repo string, commCh chan []string, done chan bool) {
 	f, err := os.OpenFile(fmt.Sprintf("data/%s-%s.csv", owner, repo), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer f.Close()
-	
+
+	writer := csv.NewWriter(f)
+
 	for comment := range commCh {
-		_, err := f.WriteString(comment)
+		err := writer.Write(comment)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -132,9 +140,9 @@ func writeComments(owner string, repo string, commCh chan string, done chan bool
 	done <- true
 }
 
-func scrapeComments(owner string, repo string, limitCh chan int, rateCh chan int, wg *sync.WaitGroup) {	
+func scrapeComments(owner string, repo string, limitCh chan int, rateCh chan int, wg *sync.WaitGroup) {
 	respCh := make(chan *resty.Response)
-	commCh := make(chan string)
+	commCh := make(chan []string)
 	done := make(chan bool)
 	go sendRequests(owner, repo, respCh, limitCh, rateCh)
 	go processResponses(respCh, commCh)
@@ -151,10 +159,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer f.Close()	
-	
+	defer f.Close()
+
 	csvReader := csv.NewReader(f)
-	
+
 	_, err = csvReader.Read() // skip first line
 	if err != nil {
 		if err != io.EOF {
@@ -180,7 +188,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		
+
 		wg.Add(1)
 		go scrapeComments(line[0], line[1], limitCh, rateCh, &wg)
 	}
