@@ -102,18 +102,45 @@ func sendRequests(owner string, repo string, respCh chan *resty.Response, limitC
 
 func processResponses(respCh chan *resty.Response, commCh chan []string) {
 	var comments interface{}
+	var user_id,
+		user_login,
+		pull_request_url,
+		comment_id,
+		created_at,
+		path, diff_hunk,
+		content string
+
+	replacer := strings.NewReplacer("\r", "", "\n", "")
+
 	for response := range respCh {
 		json.Unmarshal(response.Body(), &comments)
 		comments, _ := comments.([]interface{})
 
-		replacer := strings.NewReplacer("\r", "", "\n", "")
 		for _, comment := range comments {
 			comment_map, _ := comment.(map[string]interface{})
+
+			user := comment_map["user"]
+			if user != nil {
+				user_id = fmt.Sprintf("%d", int(user.(map[string]interface{})["id"].(float64)))
+				user_login = user.(map[string]interface{})["login"].(string)
+			}
+
+			pull_request_url = comment_map["pull_request_url"].(string)
+			comment_id = fmt.Sprintf("%d", int(comment_map["id"].(float64)))
+			created_at = comment_map["created_at"].(string)
+			path = comment_map["path"].(string)
+			diff_hunk = replacer.Replace(comment_map["diff_hunk"].(string))
+			content = replacer.Replace(comment_map["body"].(string))
+
 			data := []string{
-				// fmt.Sprintf("%d", int(comment_map["id"].(float64))),
-				comment_map["url"].(string),
-				comment_map["created_at"].(string),
-				replacer.Replace(comment_map["body"].(string))}
+				user_id,
+				user_login,
+				pull_request_url,
+				comment_id,
+				created_at,
+				path,
+				diff_hunk,
+				content}
 			commCh <- data
 		}
 	}
@@ -129,6 +156,16 @@ func writeComments(owner string, repo string, commCh chan []string, done chan bo
 	defer f.Close()
 
 	writer := csv.NewWriter(f)
+
+	writer.Write([]string{
+		"user_id",
+		"user_login",
+		"pull_request_url",
+		"comment_id",
+		"created_at",
+		"path",
+		"diff_hunk",
+		"content"})
 
 	for comment := range commCh {
 		err := writer.Write(comment)
