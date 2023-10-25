@@ -43,20 +43,28 @@ func getRate(rateCh chan int) {
 
 func getRemainingLimit(limitCh chan int) {
 	client := resty.New()
+	url := "https://api.github.com/rate_limit"
 
 	var body map[string]interface{}
 	for {
-		url := "https://api.github.com/rate_limit"
-
 		resp := sendRequest(client, make(map[string]string), url)
 
 		json.Unmarshal(resp.Body(), &body)
 
 		remaining := int(math.Round(body["resources"].(map[string]interface{})["core"].(map[string]interface{})["remaining"].(float64)))
+		reset := int(math.Round(body["resources"].(map[string]interface{})["core"].(map[string]interface{})["reset"].(float64)))
 
 		for i := 0; i < remaining; i++ {
 			limitCh <- 1
 		}
+
+		now := time.Now().Unix()
+		sleepTime := int64(reset) - now
+
+		log.Printf("%d requests remaining, reset in %d seconds", remaining, sleepTime)
+
+		time.Sleep(time.Duration(sleepTime) * time.Second)
+
 	}
 }
 
