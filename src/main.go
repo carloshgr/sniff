@@ -182,6 +182,7 @@ func writeComments(owner string, repo string, commCh chan []string, done chan bo
 		}
 	}
 
+	writer.Flush()
 	done <- true
 }
 
