@@ -68,10 +68,8 @@ func getRemainingLimit(limitCh chan int) {
 	}
 }
 
-func sendRequests(owner string, repo string, respCh chan *resty.Response, limitCh chan int, rateCh chan int) {
+func sendRequests(url string, respCh chan *resty.Response, limitCh chan int, rateCh chan int) {
 	client := resty.New()
-
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/comments", owner, repo)
 
 	var resp *resty.Response
 	page := 1
@@ -108,7 +106,7 @@ func sendRequests(owner string, repo string, respCh chan *resty.Response, limitC
 	close(respCh)
 }
 
-func processResponses(respCh chan *resty.Response, commCh chan []string) {
+func processReviews(respCh chan *resty.Response, commCh chan []string) {
 	var comments interface{}
 	var user_id,
 		user_login,
@@ -156,8 +154,51 @@ func processResponses(respCh chan *resty.Response, commCh chan []string) {
 	close(commCh)
 }
 
-func writeComments(owner string, repo string, commCh chan []string, done chan bool) {
-	f, err := os.OpenFile(fmt.Sprintf("data/%s-%s.csv", owner, repo), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+func processComments(respCh chan *resty.Response, commCh chan []string) {
+	var comments interface{}
+	var user_id,
+		user_login,
+		issue_url,
+		comment_id,
+		created_at,
+		content string
+
+	replacer := strings.NewReplacer("\r", "", "\n", "")
+
+	for response := range respCh {
+		json.Unmarshal(response.Body(), &comments)
+		comments, _ := comments.([]interface{})
+
+		for _, comment := range comments {
+			comment_map, _ := comment.(map[string]interface{})
+
+			user := comment_map["user"]
+			if user != nil {
+				user_id = fmt.Sprintf("%d", int(user.(map[string]interface{})["id"].(float64)))
+				user_login = user.(map[string]interface{})["login"].(string)
+			}
+
+			issue_url = comment_map["issue_url"].(string)
+			comment_id = fmt.Sprintf("%d", int(comment_map["id"].(float64)))
+			created_at = comment_map["created_at"].(string)
+			content = replacer.Replace(comment_map["body"].(string))
+
+			data := []string{
+				user_id,
+				user_login,
+				issue_url,
+				comment_id,
+				created_at,
+				content}
+			commCh <- data
+		}
+	}
+
+	close(commCh)
+}
+
+func writeReviews(owner string, repo string, commCh chan []string, done chan bool) {
+	f, err := os.OpenFile(fmt.Sprintf("data/%s-%s-reviews.csv", owner, repo), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -186,12 +227,55 @@ func writeComments(owner string, repo string, commCh chan []string, done chan bo
 	done <- true
 }
 
+func writeComments(owner string, repo string, commCh chan []string, done chan bool) {
+	f, err := os.OpenFile(fmt.Sprintf("data/%s-%s-comments.csv", owner, repo), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer f.Close()
+
+	writer := csv.NewWriter(f)
+
+	writer.Write([]string{
+		"user_id",
+		"user_login",
+		"issue_url",
+		"comment_id",
+		"created_at",
+		"content"})
+
+	for comment := range commCh {
+		err := writer.Write(comment)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	writer.Flush()
+	done <- true
+}
+
+func scrapeReviews(owner string, repo string, limitCh chan int, rateCh chan int, wg *sync.WaitGroup) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/comments", owner, repo)
+	respCh := make(chan *resty.Response)
+	reviewsCh := make(chan []string)
+	done := make(chan bool)
+
+	go sendRequests(url, respCh, limitCh, rateCh)
+	go processReviews(respCh, reviewsCh)
+	go writeReviews(owner, repo, reviewsCh, done)
+
+	<-done
+	wg.Done()
+}
+
 func scrapeComments(owner string, repo string, limitCh chan int, rateCh chan int, wg *sync.WaitGroup) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/comments", owner, repo)
 	respCh := make(chan *resty.Response)
 	commCh := make(chan []string)
 	done := make(chan bool)
-	go sendRequests(owner, repo, respCh, limitCh, rateCh)
-	go processResponses(respCh, commCh)
+	go sendRequests(url, respCh, limitCh, rateCh)
+	go processComments(respCh, commCh)
 	go writeComments(owner, repo, commCh, done)
 
 	<-done
@@ -236,6 +320,7 @@ func main() {
 		}
 
 		wg.Add(1)
+		go scrapeReviews(line[0], line[1], limitCh, rateCh, &wg)
 		go scrapeComments(line[0], line[1], limitCh, rateCh, &wg)
 	}
 
