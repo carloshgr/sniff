@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"strconv"
 
 	"github.com/go-resty/resty/v2"
 	"github.com/joho/godotenv"
@@ -68,24 +69,36 @@ func getRemainingLimit(limitCh chan int) {
 	}
 }
 
-func sendRequests(url string, respCh chan *resty.Response, limitCh chan int, rateCh chan int) {
+func sendRequests(url string, respCh chan *resty.Response, limitCh chan int, rateCh chan int, queryParams map[string]string) {
 	client := resty.New()
 
 	var resp *resty.Response
-	page := 1
-	
-	queryParams := map[string]string{}
+	value, exists := queryParams["page"]
+	page := 0
+	if exists {
+		intValue, _ := strconv.Atoi(value)
+		page = intValue
+	}
 
 	for {
-		<-limitCh
-		<-rateCh
-		resp = sendRequest(client, queryParams, url)
-
-		if resp.IsSuccess() {
-			log.Printf("Request, %s, %d, success", url, page)
+		for {
+			<-limitCh
+			<-rateCh
+			resp = sendRequest(client, queryParams, url)
+	
+			if resp.IsSuccess() {
+				log.Printf("Request, %s, %d, success", url, page)
+				break
+			} else {
+				log.Printf("Request, %s, %d, failed, %s", url, page, resp.Body())
+			}
+		}
+		if exists {
+			page = page + 1
+			queryParams["page"] = fmt.Sprintf("%d", page)
+		} else if (!exists) || (fmt.Sprintf("%s", resp.Body()) == "[]") {
+			log.Printf("AQUIIIII")
 			break
-		} else {
-			log.Printf("Request, %s, %d, failed, %s", url, page, resp.Body())
 		}
 	}
 
@@ -154,9 +167,14 @@ func getFileUrl(prUrl string, commentUrl string, limitCh chan int, rateCh chan i
 	done := make(chan bool)
 	dataCh := make(chan []string)
 
+	pageQueryParams := map[string]string{
+		"per_page": "100",
+		"page": "1",
+	}
+
 	filesUrl := fmt.Sprintf("%s/files", prUrl)
-	go sendRequests(commentUrl, commentRespCh, limitCh, rateCh)
-	go sendRequests(filesUrl, filesRespCh, limitCh, rateCh)
+	go sendRequests(commentUrl, commentRespCh, limitCh, rateCh, map[string]string{})
+	go sendRequests(filesUrl, filesRespCh, limitCh, rateCh, pageQueryParams)
 	go processCommentResponse(commentRespCh, commentCh)
 	go processFilesResponse(filesRespCh, filesCh)
 	go filterFiles(filesCh, commentCh, dataCh)
@@ -226,11 +244,12 @@ func main() {
 		}
 
 		wg.Add(1)
-		prUrl := line[0]
-		commentUrl := createCommentUrl(prUrl, line[1])
+		// prUrl := line[0]
+		commentUrl := createCommentUrl("https://api.github.com/repos/adamtornhill/code-maat/pulls/15", line[1])
 
-		go getFileUrl(prUrl, commentUrl, limitCh, rateCh, control, writer, &wg)
+		go getFileUrl("https://api.github.com/repos/adamtornhill/code-maat/pulls/15", commentUrl, limitCh, rateCh, control, writer, &wg)
 		<- control
+		break
 	}
 	writer.Flush()
 
