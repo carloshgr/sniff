@@ -193,7 +193,7 @@ func getPRUrlFromComment(comment map[string]interface{}) string {
 	}
 }
 
-func filterFiles(filesCh chan []interface{}, commentCh chan map[string]interface{}, dataCh chan []string, logger *log.Logger) {
+func filterFiles(prId string, filesCh chan []interface{}, commentCh chan map[string]interface{}, dataCh chan []string, logger *log.Logger) {
 	comment := <- commentCh
 	files := <- filesCh
 
@@ -208,6 +208,7 @@ func filterFiles(filesCh chan []interface{}, commentCh chan map[string]interface
 
 		filenames = append(filenames, fileMap["filename"].(string))
 		if fileMap["filename"] == comment["path"] {
+			data = append(data, prId)
 			data = append(data, fmt.Sprintf("%d", int(comment["id"].(float64))))
 			data = append(data, replacer.Replace(comment["diff_hunk"].(string)))
 			data = append(data, fileMap["filename"].(string))
@@ -234,7 +235,7 @@ func writeComments(writer *csv.Writer, dataCh chan []string, done chan bool) {
 	done <- true
 }
 
-func getFileUrl(prUrl string, commentUrl string, limitCh chan int, rateCh chan int, control chan bool, writer *csv.Writer, wg *sync.WaitGroup, logger *log.Logger) {
+func getFileUrl(prId string, prUrl string, commentUrl string, limitCh chan int, rateCh chan int, control chan bool, writer *csv.Writer, wg *sync.WaitGroup, logger *log.Logger) {
 	commentCh := make(chan map[string]interface{})
 	filesCh := make(chan []interface{})
 	done := make(chan bool)
@@ -243,7 +244,7 @@ func getFileUrl(prUrl string, commentUrl string, limitCh chan int, rateCh chan i
 	filesUrl := fmt.Sprintf("%s/files", prUrl)
 	go getCommentRequest(commentUrl, commentCh, limitCh, rateCh, logger)
 	go getFilesRequest(filesUrl, filesCh, limitCh, rateCh, logger)
-	go filterFiles(filesCh, commentCh, dataCh, logger)
+	go filterFiles(prId, filesCh, commentCh, dataCh, logger)
 	go writeComments(writer, dataCh, done)
 
 	<-done
@@ -254,6 +255,11 @@ func getFileUrl(prUrl string, commentUrl string, limitCh chan int, rateCh chan i
 func createCommentUrl(prUrl string, commentId string) string {
 	data := strings.Split(prUrl, "/")
 	return fmt.Sprintf("%s/%s/comments/%s", data[0], strings.Join(data[1:len(data)-1], "/"), commentId)
+}
+
+func getPullRequestIdFromRequest(prUrl string) string {
+	data := strings.Split(prUrl, "/")
+	return data[len(data)-1]
 }
 
 func main() {
@@ -299,6 +305,7 @@ func main() {
 
 	writer := csv.NewWriter(f)
 	writer.Write([]string{
+		"pr_id",
 		"comment_id",
 		"diff_hunk",
 		"filename",
@@ -319,8 +326,9 @@ func main() {
 		wg.Add(1)
 		prUrl := line[0]
 		commentUrl := createCommentUrl(prUrl, line[1])
+		prId := getPullRequestIdFromRequest(prUrl)
 
-		go getFileUrl(prUrl, commentUrl, limitCh, rateCh, control, writer, &wg, logger)
+		go getFileUrl(prId, prUrl, commentUrl, limitCh, rateCh, control, writer, &wg, logger)
 		<- control
 	}
 	writer.Flush()
