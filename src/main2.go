@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"strconv"
 
 	"github.com/go-resty/resty/v2"
 	"github.com/joho/godotenv"
@@ -69,18 +68,36 @@ func getRemainingLimit(limitCh chan int) {
 	}
 }
 
-func sendRequests(url string, respCh chan *resty.Response, limitCh chan int, rateCh chan int, queryParams map[string]string) {
+func isInList(target string, list []string) bool {
+	for _, element := range list {
+		if element == target {
+			return true
+		}
+	}
+	return false
+}
+
+func getFilesRequest(url string, filesCh chan []interface{}, limitCh chan int, rateCh chan int, logger *log.Logger) {
 	client := resty.New()
 
 	var resp *resty.Response
-	value, exists := queryParams["page"]
-	page := 0
-	if exists {
-		intValue, _ := strconv.Atoi(value)
-		page = intValue
+	var completeResp []interface{}
+	var files interface{}
+
+	finished := false
+	page := 1
+
+	queryParams := map[string]string{
+		"per_page": "100",
+		"page": "1",
 	}
 
-	for {
+	errorMessages := []string{
+		"Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization.",
+		"Not Found",
+	}
+
+	for !finished {
 		for {
 			<-limitCh
 			<-rateCh
@@ -88,44 +105,108 @@ func sendRequests(url string, respCh chan *resty.Response, limitCh chan int, rat
 	
 			if resp.IsSuccess() {
 				log.Printf("Request, %s, %d, success", url, page)
+
+				json.Unmarshal(resp.Body(), &files)
+				files, _ := files.([]interface{})
+				finished = len(files) == 0
+				if !finished {
+					completeResp = append(completeResp, files...)
+				}
+
 				break
 			} else {
-				log.Printf("Request, %s, %d, failed, %s", url, page, resp.Body())
+				json.Unmarshal(resp.Body(), &files)
+				result, _ := files.(map[string]interface{})
+
+				logger.Printf("Request, %s, %d, failed, %s", url, page, resp.Body())
+				if isInList(result["message"].(string), errorMessages) {
+					finished = true
+					break
+				}
 			}
 		}
-		if exists {
-			page = page + 1
-			queryParams["page"] = fmt.Sprintf("%d", page)
-		} else if (!exists) || (fmt.Sprintf("%s", resp.Body()) == "[]") {
-			log.Printf("AQUIIIII")
-			break
+		page = page + 1
+		queryParams["page"] = fmt.Sprintf("%d", page)
+	}
+
+	filesCh <- completeResp
+	close(filesCh)
+}
+
+func getCommentRequest(url string, commentCh chan map[string]interface{}, limitCh chan int, rateCh chan int, logger *log.Logger) {
+	client := resty.New()
+
+	var resp *resty.Response
+	var comment interface{}
+	var parsedComment map[string]interface{}
+	finished := false
+
+	errorMessages := []string{
+		"Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization.",
+		"Not Found",
+	}
+
+	queryParams := map[string]string{}
+	
+	for !finished {
+		for {
+			<-limitCh
+			<-rateCh
+			resp = sendRequest(client, queryParams, url)
+	
+			if resp.IsSuccess() {
+				log.Printf("Request, %s, success", url)
+
+				json.Unmarshal(resp.Body(), &comment)
+				comment, _ := comment.(map[string]interface{})
+				parsedComment = comment
+				finished = true
+
+				break
+			} else {
+				json.Unmarshal(resp.Body(), &comment)
+				result, _ := comment.(map[string]interface{})
+
+				logger.Printf("Request, %s, failed, %s", url, resp.Body())
+				if isInList(result["message"].(string), errorMessages) {
+					finished = true
+					parsedComment = result
+					break
+				}
+			}
 		}
 	}
 
-	respCh <- resp
-
-	close(respCh)
+	commentCh <- parsedComment
+	close(commentCh)
 }
 
-func processCommentResponse(respCh chan *resty.Response, commentCh chan map[string]interface{}) {
-	var comment interface{}
-	for response := range respCh {
-		json.Unmarshal(response.Body(), &comment)
-		comment, _ := comment.(map[string]interface{})
-		commentCh <- comment
+func getPRUrlFromComment(comment map[string]interface{}) string {
+	_, exists := comment["message"]
+	if exists {
+		return ""
+	} else  {
+		pullRequestObj := comment["_links"].(map[string]interface{})["pull_request"]
+		prLink := pullRequestObj.(map[string]interface{})["href"]
+	
+		return prLink.(string)
 	}
 }
 
-func filterFiles(filesCh chan []interface{}, commentCh chan map[string]interface{}, dataCh chan []string) {
+func filterFiles(filesCh chan []interface{}, commentCh chan map[string]interface{}, dataCh chan []string, logger *log.Logger) {
 	comment := <- commentCh
 	files := <- filesCh
 
 	replacer := strings.NewReplacer("\r", "", "\n", "")
 	var data []string
+	var filenames []string
+	var ref string
 
+	ref = getPRUrlFromComment(comment)
 	for _, file := range files {
 		fileMap, _ := file.(map[string]interface{})
 
+		filenames = append(filenames, fileMap["filename"].(string))
 		if fileMap["filename"] == comment["path"] {
 			data = append(data, fmt.Sprintf("%d", int(comment["id"].(float64))))
 			data = append(data, replacer.Replace(comment["diff_hunk"].(string)))
@@ -134,16 +215,10 @@ func filterFiles(filesCh chan []interface{}, commentCh chan map[string]interface
 			data = append(data, fileMap["raw_url"].(string))
 		}
 	}
-	dataCh <- data
-}
-
-func processFilesResponse(respCh chan *resty.Response, filesCh chan []interface{}) {
-	var files interface{}
-	for response := range respCh {
-		json.Unmarshal(response.Body(), &files)
-		files, _ := files.([]interface{})
-		filesCh <- files
+	if len(data) == 0 {
+		logger.Printf("PR URL: %s | Comment path %s not in PR files %s", ref, comment["path"], filenames)
 	}
+	dataCh <- data
 }
 
 func writeComments(writer *csv.Writer, dataCh chan []string, done chan bool) {
@@ -159,25 +234,16 @@ func writeComments(writer *csv.Writer, dataCh chan []string, done chan bool) {
 	done <- true
 }
 
-func getFileUrl(prUrl string, commentUrl string, limitCh chan int, rateCh chan int, control chan bool, writer *csv.Writer, wg *sync.WaitGroup) {
-	commentRespCh := make(chan *resty.Response)
-	filesRespCh := make(chan *resty.Response)
+func getFileUrl(prUrl string, commentUrl string, limitCh chan int, rateCh chan int, control chan bool, writer *csv.Writer, wg *sync.WaitGroup, logger *log.Logger) {
 	commentCh := make(chan map[string]interface{})
 	filesCh := make(chan []interface{})
 	done := make(chan bool)
 	dataCh := make(chan []string)
 
-	pageQueryParams := map[string]string{
-		"per_page": "100",
-		"page": "1",
-	}
-
 	filesUrl := fmt.Sprintf("%s/files", prUrl)
-	go sendRequests(commentUrl, commentRespCh, limitCh, rateCh, map[string]string{})
-	go sendRequests(filesUrl, filesRespCh, limitCh, rateCh, pageQueryParams)
-	go processCommentResponse(commentRespCh, commentCh)
-	go processFilesResponse(filesRespCh, filesCh)
-	go filterFiles(filesCh, commentCh, dataCh)
+	go getCommentRequest(commentUrl, commentCh, limitCh, rateCh, logger)
+	go getFilesRequest(filesUrl, filesCh, limitCh, rateCh, logger)
+	go filterFiles(filesCh, commentCh, dataCh, logger)
 	go writeComments(writer, dataCh, done)
 
 	<-done
@@ -224,6 +290,13 @@ func main() {
 	}
 	defer f.Close()
 
+	logFile, err := os.OpenFile("data/errorLog.txt", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Fatal("Error opening log file:", err)
+	}
+	defer logFile.Close()
+	logger := log.New(logFile, "ErrorLogger: ", log.Ldate|log.Ltime|log.Lshortfile)
+
 	writer := csv.NewWriter(f)
 	writer.Write([]string{
 		"comment_id",
@@ -244,12 +317,11 @@ func main() {
 		}
 
 		wg.Add(1)
-		// prUrl := line[0]
-		commentUrl := createCommentUrl("https://api.github.com/repos/adamtornhill/code-maat/pulls/15", line[1])
+		prUrl := line[0]
+		commentUrl := createCommentUrl(prUrl, line[1])
 
-		go getFileUrl("https://api.github.com/repos/adamtornhill/code-maat/pulls/15", commentUrl, limitCh, rateCh, control, writer, &wg)
+		go getFileUrl(prUrl, commentUrl, limitCh, rateCh, control, writer, &wg, logger)
 		<- control
-		break
 	}
 	writer.Flush()
 
