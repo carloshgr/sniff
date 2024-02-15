@@ -7,6 +7,20 @@ import (
 	"io"
 )
 
+type Params struct {
+	LogFile string
+	InputFile string
+	OutputFile string
+	OutputColumns []string
+}
+
+type InputData struct {
+	Line []string
+	Writer *csv.Writer
+	OutputFile *os.File
+}
+
+
 func IsInList(target string, list []string) bool {
 	for _, element := range list {
 		if element == target {
@@ -29,8 +43,14 @@ func WriteComments(writer *csv.Writer, dataCh chan []string, done chan bool) {
 	done <- true
 }
 
-func openFile(path string) *os.File {
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+func openFile(path string, mode string) *os.File {
+	var f *os.File
+	var err error
+	if mode == "read" {
+		f, err = os.Open(path)
+	} else {
+		f, err = os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	}
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -39,7 +59,7 @@ func openFile(path string) *os.File {
 }
 
 func CreateWriter(path string, columns []string) (*os.File, *csv.Writer) {
-	f := openFile(path)
+	f := openFile(path, "write")
 
 	writer := csv.NewWriter(f)
 	writer.Write(columns)
@@ -47,7 +67,7 @@ func CreateWriter(path string, columns []string) (*os.File, *csv.Writer) {
 }
 
 func CreateReader(path string) (*os.File, *csv.Reader) {
-	f := openFile(path)
+	f := openFile(path, "read")
 
 	csvReader := csv.NewReader(f)
 
@@ -62,7 +82,7 @@ func CreateReader(path string) (*os.File, *csv.Reader) {
 }
 
 func CreateLogger(path string) (*os.File, *log.Logger) {
-	f := openFile(path)
+	f := openFile(path, "write")
 	logger := log.New(f, "ErrorLogger: ", log.Ldate|log.Ltime|log.Lshortfile)
 	return f, logger
 }

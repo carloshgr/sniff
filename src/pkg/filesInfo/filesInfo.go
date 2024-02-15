@@ -1,7 +1,7 @@
 package filesInfo
 
 import (
-	"encoding/csv"
+	// "encoding/csv"
 	"encoding/json"
 	"fmt"
 	// "io"
@@ -164,7 +164,22 @@ func filterFiles(prId string, filesCh chan []interface{}, commentCh chan map[str
 	dataCh <- data
 }
 
-func GetFileUrl(prId string, prUrl string, commentUrl string, limitCh chan int, rateCh chan int, control chan bool, writer *csv.Writer, wg *sync.WaitGroup, logger *log.Logger) {
+func createCommentUrl(prUrl string, commentId string) string {
+	data := strings.Split(prUrl, "/")
+	return fmt.Sprintf("%s/%s/comments/%s", data[0], strings.Join(data[1:len(data)-1], "/"), commentId)
+}
+
+func getPullRequestIdFromRequest(prUrl string) string {
+	data := strings.Split(prUrl, "/")
+	return data[len(data)-1]
+}
+
+func GetFileUrl(input utils.InputData, limitCh chan int, rateCh chan int, control chan bool, wg *sync.WaitGroup, logger *log.Logger) {
+	prUrl := input.Line[0]
+	commentUrl := createCommentUrl(prUrl, input.Line[1])
+	prId := getPullRequestIdFromRequest(prUrl)
+	writer := input.Writer
+	
 	commentCh := make(chan map[string]interface{})
 	filesCh := make(chan []interface{})
 	done := make(chan bool)
